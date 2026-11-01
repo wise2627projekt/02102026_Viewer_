@@ -1,0 +1,100 @@
+# Builds the PhotoVec Viewer for Windows and for the Mac (Apple Silicon: M1 and newer) on GitHub's own machines -
+# nothing to install on your computer.
+# Run it:  your repository -> "Actions" -> "Build Viewer" -> "Run workflow". After ~5-10 minutes the finished zip files are at the
+# bottom of the run page ("Artifacts"). Creating a Release with a tag like v1 also attaches them to that release by itself.
+name: Build Viewer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: PhotoVecViewer-Windows
+          - os: macos-latest            # Apple Silicon (M1 and newer)
+            name: PhotoVecViewer-macOS
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install libraries
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Self-test (source)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python photovec_viewer.py --selftest selftest_source.txt
+          cat selftest_source.txt
+          grep -q "SELFTEST OK" selftest_source.txt
+
+      - name: Build the program
+        run: python -m PyInstaller --noconfirm --clean PhotoVecViewer.spec
+
+      - name: Sign the app (ad hoc, macOS - Apple Silicon refuses unsigned programs)
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - dist/PhotoVecViewer.app
+
+      - name: Self-test of the FINISHED program (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          Start-Process -FilePath "dist\PhotoVecViewer\PhotoVecViewer.exe" -ArgumentList "--selftest","selftest_exe.txt" -Wait -NoNewWindow
+          Get-Content selftest_exe.txt
+          if (-not (Select-String -Path selftest_exe.txt -Pattern "SELFTEST OK" -Quiet)) { exit 1 }
+
+      - name: Self-test of the FINISHED program (macOS)
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          dist/PhotoVecViewer.app/Contents/MacOS/PhotoVecViewer --selftest selftest_app.txt || true
+          cat selftest_app.txt
+          grep -q "SELFTEST OK" selftest_app.txt
+
+      - name: Pack (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist\PhotoVecViewer -DestinationPath ${{ matrix.name }}.zip
+
+      - name: Pack (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/PhotoVecViewer.app ${{ matrix.name }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.zip
+          if-no-files-found: error
+
+  release:                                  # only when a tag (a Release) started the run: one job puts both zips on the release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.zip"

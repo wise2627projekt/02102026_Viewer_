@@ -1,0 +1,4 @@
+# Only what the Viewer needs (it never traces anything).
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+PySide6-Essentials==6.6.2
